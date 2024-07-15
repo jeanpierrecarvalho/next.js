@@ -54,6 +54,70 @@ describe(`app-dir-hmr`, () => {
       }
     })
 
+    it('should update server components after navigating to a page with a different runtime', async () => {
+      const envContent = await next.readFile(envFile)
+
+      const browser = await next.browser('/env/node')
+      await browser.loadPage(`${next.url}/env/edge`)
+      await browser.eval('window.__TEST_NO_RELOAD = true')
+
+      await next.patchFile(envFile, 'MY_DEVICE="ipad"')
+
+      try {
+        const logs = await browser.log()
+
+        if (process.env.TURBOPACK) {
+          await retry(async () => {
+            const fastRefreshLogs = logs.filter((log) => {
+              return log.message.startsWith('[Fast Refresh]')
+            })
+            // TODO: Double "rebuilding" but single "done" is odd.
+            expect(fastRefreshLogs).toEqual([
+              { source: 'log', message: '[Fast Refresh] rebuilding' },
+              { source: 'log', message: '[Fast Refresh] rebuilding' },
+              {
+                source: 'log',
+                message: expect.stringContaining('[Fast Refresh] done in '),
+              },
+            ])
+          })
+        } else {
+          await retry(
+            async () => {
+              const fastRefreshLogs = logs.filter((log) => {
+                return log.message.startsWith('[Fast Refresh]')
+              })
+              // FIXME: Should be either a single "rebuilding"+"done" or the last "rebuilding" should be followed by "done"
+              expect(fastRefreshLogs).toEqual([
+                { source: 'log', message: '[Fast Refresh] rebuilding' },
+                { source: 'log', message: '[Fast Refresh] rebuilding' },
+                {
+                  source: 'log',
+                  message: expect.stringContaining('[Fast Refresh] done in '),
+                },
+                { source: 'log', message: '[Fast Refresh] rebuilding' },
+              ])
+            },
+            // Very slow Hot Update for some reason.
+            // May be related to receiving 3 rebuild events but only one finish event
+            5000
+          )
+        }
+        const envValue = await browser.elementByCss('p').text()
+        const mpa = await browser.eval('window.__TEST_NO_RELOAD === undefined')
+        // Flaky sometimes in Webpack:
+        // A. misses update and just receives `{ envValue: 'mac', mpa: false }`
+        // B. triggers error on server resulting in MPA: `{ envValue: 'ipad', mpa: true }` and server logs: ⨯ [TypeError: Cannot read properties of undefined (reading 'polyfillFiles')] ⨯ [TypeError: Cannot read properties of null (reading 'default')]
+        // A is more common than B.
+        expect({ envValue, mpa }).toEqual({
+          envValue: 'ipad',
+          mpa: false,
+        })
+      } finally {
+        await next.patchFile(envFile, envContent)
+      }
+    })
+
     it('should update server components pages when env files is changed (nodejs)', async () => {
       const envContent = await next.readFile(envFile)
       const browser = await next.browser('/env/node')
